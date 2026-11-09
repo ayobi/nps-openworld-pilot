@@ -17,6 +17,12 @@ Outputs in --out: pubmed.csv, citations.csv, preprints.csv, combined.csv,
 combined.ris (import into Rayyan or Zotero for screening) and run_log.md (the
 dates and counts the protocol asks you to record).
 
+OpenAlex has expected an API key since February 2026: without one there is a
+small daily allowance and some request styles are refused. A free key (create
+an account at openalex.org) goes in --openalex-key or the OPENALEX_API_KEY
+environment variable. Results are read page by page, which works either way,
+and a failing source is reported without stopping the run.
+
 Uses only the Python standard library.
 
 Examples:
@@ -29,6 +35,7 @@ import argparse
 import csv
 import datetime as dt
 import json
+import os
 import re
 import sys
 import time
@@ -43,6 +50,15 @@ OPENALEX = "https://api.openalex.org"
 HERE = Path(__file__).resolve().parent
 FIELDS = ["sources", "year", "title", "authors", "journal", "doi", "pmid", "abstract"]
 PREPRINT_TERMS = "psychoactive mass spectrometry"
+OPENALEX_KEY = ""  # set from --openalex-key or OPENALEX_API_KEY in main()
+
+
+def oa(params: dict, email: str) -> dict:
+    """OpenAlex query parameters with the contact email and, when given, the API key."""
+    out = {**params, "mailto": email}
+    if OPENALEX_KEY:
+        out["api_key"] = OPENALEX_KEY
+    return out
 
 
 def http_get(url: str, params: dict | None = None, retries: int = 3) -> str | None:
@@ -123,7 +139,40 @@ def pubmed_fetch(pmids: list[str], email: str) -> list[dict]:
     return records
 
 
-def check_seeds(seeds: list[dict], records: list[dict], email: str) -> list[dict]:
+def split_blocks(query: str) -> list[str]:
+    """Top-level AND blocks of a PubMed query (AND inside parentheses is left alone)."""
+    blocks, depth, start, i = [], 0, 0, 0
+    while i < len(query):
+        ch = query[i]
+        depth += ch == "("
+        depth -= ch == ")"
+        if depth == 0 and query[i:i + 5].upper() == " AND ":
+            blocks.append(query[start:i].strip())
+            start, i = i + 5, i + 5
+            continue
+        i += 1
+    blocks.append(query[start:].strip())
+    return [b for b in blocks if b]
+
+
+def seed_pmid(seed: dict, email: str) -> str:
+    if seed.get("pmid"):
+        return seed["pmid"]
+    term = f"{seed['doi']}[doi]" if seed.get("doi") else f"\"{seed['title_fragment']}\"[ti]"
+    ids = pubmed_search(term, email)[1]
+    return ids[0] if ids else ""
+
+
+def failing_blocks(seed: dict, query: str, email: str) -> list[str]:
+    """The query blocks that do not match a seed PubMed indexes (empty if it cannot be found)."""
+    pmid = seed_pmid(seed, email)
+    if not pmid:
+        return []
+    return [block for block in split_blocks(query)
+            if pubmed_search(f"({block}) AND {pmid}[pmid]", email)[0] == 0]
+
+
+def check_seeds(seeds: list[dict], records: list[dict], email: str, query: str = "") -> list[dict]:
     dois = {r["doi"].lower() for r in records if r.get("doi")}
     pmids = {r["pmid"] for r in records if r.get("pmid")}
     titles = [norm(r["title"]) for r in records]
@@ -142,7 +191,10 @@ def check_seeds(seeds: list[dict], records: list[dict], email: str) -> list[dict
             else:
                 term = f"\"{seed['title_fragment']}\"[ti]"
             indexed = "yes" if pubmed_search(term, email)[0] else "no"
-        rows.append({**seed, "retrieved": "yes" if found else "no", "in_pubmed": indexed})
+        missed_by = ""
+        if not found and indexed == "yes" and query:
+            missed_by = " | ".join(failing_blocks(seed, query, email))
+        rows.append({**seed, "retrieved": "yes" if found else "no", "in_pubmed": indexed, "missed_by": missed_by})
     return rows
 
 
@@ -169,28 +221,30 @@ def openalex_record(work: dict, source: str) -> dict:
     }
 
 
-def openalex_list(params: dict, email: str, cap: int = 2000) -> list[dict]:
-    query = {"per-page": 200, "cursor": "*", "mailto": email, **params}
+def openalex_list(params: dict, email: str, cap: int = 2000, per_page: int = 200) -> list[dict]:
+    """All results of a works query, read page by page (OpenAlex refuses keyless cursor paging)."""
     works: list[dict] = []
-    while True:
-        data = json.loads(http_get(f"{OPENALEX}/works", query))
-        works += data.get("results", [])
-        cursor = (data.get("meta") or {}).get("next_cursor")
-        if not cursor or not data.get("results") or len(works) >= cap:
-            return works[:cap]
-        query["cursor"] = cursor
+    page = 1
+    while len(works) < cap and page * per_page <= 10000:
+        data = json.loads(http_get(f"{OPENALEX}/works", oa({**params, "per-page": per_page, "page": page}, email)))
+        results = data.get("results", [])
+        works += results
+        if len(results) < per_page:
+            break
+        page += 1
         time.sleep(0.2)
+    return works[:cap]
 
 
 def openalex_seed(seed: dict, email: str) -> dict | None:
     """Find a seed in OpenAlex by DOI, falling back to a title search that must contain the fragment."""
     if seed.get("doi"):
-        text = http_get(f"{OPENALEX}/works/doi:{seed['doi']}", {"mailto": email})
+        text = http_get(f"{OPENALEX}/works/doi:{seed['doi']}", oa({}, email))
         if text:
             return json.loads(text)
     fragment = seed.get("title_fragment")
     if fragment:
-        text = http_get(f"{OPENALEX}/works", {"search": fragment, "per-page": 5, "mailto": email})
+        text = http_get(f"{OPENALEX}/works", oa({"search": fragment, "per-page": 5}, email))
         for work in json.loads(text).get("results", []) if text else []:
             if norm(fragment) in norm(work.get("display_name")):
                 return work
@@ -205,7 +259,7 @@ def openalex_by_ids(ids: list[str], email: str) -> list[dict]:
             works += openalex_list({"filter": "openalex:" + "|".join(chunk)}, email)
         except urllib.error.HTTPError:  # fall back to one request per work
             for work_id in chunk:
-                text = http_get(f"{OPENALEX}/works/{work_id}", {"mailto": email})
+                text = http_get(f"{OPENALEX}/works/{work_id}", oa({}, email))
                 if text:
                     works.append(json.loads(text))
                 time.sleep(0.1)
@@ -317,9 +371,13 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--import-ris", type=Path, action="append", default=[],
                     help="a Scopus or Web of Science RIS export; repeatable")
     ap.add_argument("--no-openalex", action="store_true", help="skip citation chasing and the preprint search")
+    ap.add_argument("--openalex-key", default=os.environ.get("OPENALEX_API_KEY", ""),
+                    help="free OpenAlex API key (default: the OPENALEX_API_KEY environment variable)")
     ap.add_argument("--from-year", type=int, default=2010)
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args(argv)
+    global OPENALEX_KEY
+    OPENALEX_KEY = args.openalex_key.strip()
     args.out.mkdir(parents=True, exist_ok=True)
     started = dt.datetime.now(dt.timezone.utc)
 
@@ -333,23 +391,37 @@ def main(argv: list[str] | None = None) -> None:
 
     with open(args.seeds, newline="", encoding="utf-8") as fh:
         seeds = [{k: (v or "").strip() for k, v in row.items()} for row in csv.DictReader(fh)]
-    seed_rows = check_seeds(seeds, pubmed, args.email)
+    seed_rows = check_seeds(seeds, pubmed, args.email, query)
     for s in seed_rows:
         note = "" if s["retrieved"] == "yes" else ("  <- query misses it" if s["in_pubmed"] == "yes"
                                                    else "  <- not in PubMed; must come from Scopus, WoS or citations")
         print(f"  seed {s['label']}: retrieved {s['retrieved']}{note}")
+        if s.get("missed_by"):
+            for block in s["missed_by"].split(" | "):
+                print(f"      fails this block: {block[:110]}{'...' if len(block) > 110 else ''}")
 
     backward = forward = preprints = []
     missing_seeds: list[str] = []
+    problems: list[str] = []
     if not args.no_openalex:
-        backward, forward, missing_seeds = chase_citations(seeds, args.email)
-        print(f"OpenAlex: {len(backward)} backward and {len(forward)} forward citations of the seeds")
-        if missing_seeds:
-            print(f"  seeds not found in OpenAlex: {', '.join(missing_seeds)}")
-        write_csv(args.out / "citations.csv", backward + forward)
-        preprints = preprint_search(args.email, args.from_year)
-        print(f"OpenAlex preprint search: {len(preprints)} records")
-        write_csv(args.out / "preprints.csv", preprints)
+        if not OPENALEX_KEY:
+            print("OpenAlex: no API key given; running on the small keyless allowance")
+        try:
+            backward, forward, missing_seeds = chase_citations(seeds, args.email)
+            print(f"OpenAlex: {len(backward)} backward and {len(forward)} forward citations of the seeds")
+            if missing_seeds:
+                print(f"  seeds not found in OpenAlex: {', '.join(missing_seeds)}")
+            write_csv(args.out / "citations.csv", backward + forward)
+        except (urllib.error.HTTPError, urllib.error.URLError) as err:
+            problems.append(f"citation chasing failed ({err}); rerun with an OpenAlex key")
+            print(f"  warning: {problems[-1]}")
+        try:
+            preprints = preprint_search(args.email, args.from_year)
+            print(f"OpenAlex preprint search: {len(preprints)} records")
+            write_csv(args.out / "preprints.csv", preprints)
+        except (urllib.error.HTTPError, urllib.error.URLError) as err:
+            problems.append(f"preprint search failed ({err}); rerun with an OpenAlex key")
+            print(f"  warning: {problems[-1]}")
 
     imports = []
     for path in args.import_ris:
@@ -365,8 +437,9 @@ def main(argv: list[str] | None = None) -> None:
     lines = [f"# Search run {started:%Y-%m-%d %H:%M} UTC", "",
              "## PubMed", "", f"- Query: `{query}`", f"- PubMed's translation: `{translation}`",
              f"- Hits: {count}", "", "## Seed check", "",
-             "| Seed | Retrieved by the query | In PubMed |", "| --- | --- | --- |"]
-    lines += [f"| {s['label']} | {s['retrieved']} | {s['in_pubmed']} |" for s in seed_rows]
+             "| Seed | Retrieved by the query | In PubMed | Query blocks that miss it |", "| --- | --- | --- | --- |"]
+    lines += [f"| {s['label']} | {s['retrieved']} | {s['in_pubmed']} | {s.get('missed_by', '')[:200].replace('|', '/')} |"
+              for s in seed_rows]
     lines += ["", "## Other sources", ""]
     if not args.no_openalex:
         lines += [f"- OpenAlex backward citations of the seeds: {len(backward)}",
@@ -375,6 +448,7 @@ def main(argv: list[str] | None = None) -> None:
         if missing_seeds:
             lines.append(f"- Seeds not found in OpenAlex: {', '.join(missing_seeds)}")
     lines += [f"- Imported from {name}: {len(records)}" for name, records in imports]
+    lines += [f"- Problem: {p}" for p in problems]
     lines += ["", "## Result", "", f"- Unique records after deduplication: {len(combined)}",
               f"- Left out as dated before {args.from_year}: {old}",
               "- Screening file: combined.ris (import into Rayyan or Zotero)"]
