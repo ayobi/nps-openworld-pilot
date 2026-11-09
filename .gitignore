@@ -1,0 +1,10 @@
+data/*
+!data/README.md
+!data/dartms.sha256
+results/
+review/run*/
+*.zip
+__MACOSX/
+.DS_Store
+__pycache__/
+*.pyc
