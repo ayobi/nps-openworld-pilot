@@ -405,6 +405,11 @@ def main(argv: list[str] | None = None) -> None:
                          "PubMed records and the seeds each recovers, then stops (OpenAlex is not called)")
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args(argv)
+    args.import_ris = [path.expanduser() for path in args.import_ris]
+    missing = [str(path) for path in args.import_ris if not path.is_file()]
+    if missing:
+        sys.exit("RIS file not found: " + ", ".join(missing)
+                 + "\nCheck the export names with: ls -lt ~/Downloads | head")
     global OPENALEX_KEY
     OPENALEX_KEY = args.openalex_key.strip()
     args.out.mkdir(parents=True, exist_ok=True)
