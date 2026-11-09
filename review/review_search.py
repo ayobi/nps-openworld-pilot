@@ -90,8 +90,8 @@ def norm(text: str | None) -> str:
 
 # ---------------------------------------------------------------- PubMed
 
-def pubmed_search(term: str, email: str) -> tuple[int, list[str], str]:
-    params = {"db": "pubmed", "term": term, "retmode": "json", "retmax": 10000,
+def pubmed_search(term: str, email: str, retmax: int = 10000) -> tuple[int, list[str], str]:
+    params = {"db": "pubmed", "term": term, "retmode": "json", "retmax": retmax,
               "tool": "nps-openworld-review", "email": email}
     result = json.loads(http_get(f"{EUTILS}/esearch.fcgi", params))["esearchresult"]
     time.sleep(0.4)  # NCBI allows three requests a second without an API key
@@ -170,6 +170,32 @@ def failing_blocks(seed: dict, query: str, email: str) -> list[str]:
         return []
     return [block for block in split_blocks(query)
             if pubmed_search(f"({block}) AND {pmid}[pmid]", email)[0] == 0]
+
+
+def try_terms(query: str, base_count: int, seed_rows: list[dict], terms: list[str], email: str) -> tuple[int, list[dict]]:
+    """For each candidate term added to the block that loses a seed: PubMed records and seeds recovered."""
+    blocks = split_blocks(query)
+    targets = []
+    for s in seed_rows:
+        for block in filter(None, (s.get("missed_by") or "").split(" | ")):
+            if block in blocks:
+                targets.append((s["label"], seed_pmid(s, email), blocks.index(block)))
+    if not targets:
+        return -1, []
+    index = targets[0][2]
+
+    def widened(extra: str) -> str:
+        block = blocks[index]
+        return block[:-1] + f" OR {extra})" if block.endswith(")") else f"({block} OR {extra})"
+
+    rows = []
+    for label, extra in [(t, t) for t in terms] + [(f"all {len(terms)} together", " OR ".join(terms))]:
+        block = widened(extra)
+        count = pubmed_search(" AND ".join(blocks[:index] + [block] + blocks[index + 1:]), email, retmax=0)[0]
+        recovered = [name for name, pmid, i in targets
+                     if i == index and pmid and pubmed_search(f"({block}) AND {pmid}[pmid]", email, retmax=0)[0]]
+        rows.append({"term": label, "records": count, "extra": count - base_count, "recovers": ", ".join(recovered)})
+    return index, rows
 
 
 def check_seeds(seeds: list[dict], records: list[dict], email: str, query: str = "") -> list[dict]:
@@ -266,7 +292,7 @@ def openalex_by_ids(ids: list[str], email: str) -> list[dict]:
     return works
 
 
-def chase_citations(seeds: list[dict], email: str) -> tuple[list[dict], list[dict], list[str]]:
+def chase_citations(seeds: list[dict], email: str) -> tuple[list[dict], list[dict], list[str], list[dict]]:
     found, missing = [], []
     for seed in seeds:
         work = openalex_seed(seed, email)
@@ -277,7 +303,7 @@ def chase_citations(seeds: list[dict], email: str) -> tuple[list[dict], list[dic
     for work in found:
         forward += [openalex_record(w, "forward citation")
                     for w in openalex_list({"filter": f"cites:{work['id'].rsplit('/', 1)[-1]}"}, email)]
-    return backward, forward, missing
+    return backward, forward, missing, [openalex_record(w, "seed") for w in found]
 
 
 def preprint_search(email: str, from_year: int) -> list[dict]:
@@ -374,6 +400,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--openalex-key", default=os.environ.get("OPENALEX_API_KEY", ""),
                     help="free OpenAlex API key (default: the OPENALEX_API_KEY environment variable)")
     ap.add_argument("--from-year", type=int, default=2010)
+    ap.add_argument("--try-terms", default="",
+                    help="candidate terms for the block that loses a seed, separated by ';'. Reports the extra "
+                         "PubMed records and the seeds each recovers, then stops (OpenAlex is not called)")
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args(argv)
     global OPENALEX_KEY
@@ -400,14 +429,32 @@ def main(argv: list[str] | None = None) -> None:
             for block in s["missed_by"].split(" | "):
                 print(f"      fails this block: {block[:110]}{'...' if len(block) > 110 else ''}")
 
-    backward = forward = preprints = []
+    if args.try_terms:
+        terms = [t.strip() for t in args.try_terms.split(";") if t.strip()]
+        index, trials = try_terms(query, count, seed_rows, terms, args.email)
+        if index < 0:
+            print("No seed is lost by a query block, so there is nothing to refine.")
+            return
+        print(f"\nWidening block {index + 1} (now {count} records):")
+        print(f"  {'term':58s} {'records':>8s} {'extra':>6s}  recovers")
+        for t in trials:
+            print(f"  {t['term'][:58]:58s} {t['records']:8d} {t['extra']:+6d}  {t['recovers'] or '-'}")
+        md = [f"# Query refinement {started:%Y-%m-%d %H:%M} UTC", "",
+              f"Block {index + 1} loses a seed; the query returns {count} records.", "",
+              "| Term added to the block | Records | Extra | Seeds recovered |", "| --- | --- | --- | --- |"]
+        md += [f"| `{t['term']}` | {t['records']} | {t['extra']:+d} | {t['recovers'] or '-'} |" for t in trials]
+        (args.out / "query_refinement.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+        print(f"Wrote {args.out / 'query_refinement.md'}")
+        return
+
+    backward = forward = preprints = seed_records = []
     missing_seeds: list[str] = []
     problems: list[str] = []
     if not args.no_openalex:
         if not OPENALEX_KEY:
             print("OpenAlex: no API key given; running on the small keyless allowance")
         try:
-            backward, forward, missing_seeds = chase_citations(seeds, args.email)
+            backward, forward, missing_seeds, seed_records = chase_citations(seeds, args.email)
             print(f"OpenAlex: {len(backward)} backward and {len(forward)} forward citations of the seeds")
             if missing_seeds:
                 print(f"  seeds not found in OpenAlex: {', '.join(missing_seeds)}")
@@ -429,7 +476,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Imported {len(records)} records from {path.name}")
         imports.append((path.name, records))
 
-    combined, old = combine([pubmed, backward, forward, preprints] + [r for _, r in imports], args.from_year)
+    combined, old = combine([seed_records, pubmed, backward, forward, preprints] + [r for _, r in imports], args.from_year)
     write_csv(args.out / "combined.csv", combined)
     write_ris(args.out / "combined.ris", combined)
     print(f"Combined: {len(combined)} unique records ({old} dated before {args.from_year} left out)")
