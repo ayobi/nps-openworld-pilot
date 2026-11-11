@@ -19,6 +19,7 @@ Pilot analyses for a planned review and benchmark on how mass-spectral library s
 | `scripts/count_replicates.py` | Finds compounds with spectra from more than one contributor and flags copies |
 | `scripts/pilot_temporal.py` | SWGDRUG temporal test, known side, threshold trade-off, entropy comparison, conformal flag, isomer-group rule, provisional classes |
 | `scripts/dart_pilot.py` | DART-MS leave-one-compound-out and temporal tests, energy weighting |
+| `scripts/pilot_fallback.py` | Class-level fallback: for compounds new at their release, how often the top hit's isomer group or drug class is right, by match factor (run after `pilot_temporal.py`) |
 | `review/review_search.py` | Literature search for the review: PubMed, seed check, citation chasing, RIS merge |
 | `review/pubmed_query.txt`, `review/seeds.csv` | The protocol's PubMed query and seed papers |
 | `review/screening/` | Title-and-abstract screening decisions for the 1,010 records, each with its reason, and the 174 records taken forward |
