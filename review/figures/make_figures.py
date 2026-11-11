@@ -180,6 +180,35 @@ def fig_sources():
     save(fig, "figS1_sources")
     return cit_only
 
-fig_designs(); fig_flow(); fig_split(); stats = fig_years(); cit = fig_sources()
+# Figure 5: unseen-compound testing by method family and by drug class
+def fig_methods_classes():
+    fams = ["library search or suspect screening", "machine-learning classifier", "diagnostic-ion or class rules",
+            "structure prediction or analogue search", "retention-time prediction"]
+    fam_lab = {"library search or suspect screening": "Library search or suspect screening", "machine-learning classifier": "Machine-learning classifier",
+               "diagnostic-ion or class rules": "Diagnostic-ion or class rules", "structure prediction or analogue search": "Structure prediction or analogue search",
+               "retention-time prediction": "Retention-time prediction"}
+    a = [(fam_lab[f], sum(tested(r) for r in elig if r["method_family"] == f), sum(not tested(r) for r in elig if r["method_family"] == f)) for f in fams]
+    classes = Counter(c for r in elig for c in r["drug_class_focus"].split("; ") if c)
+    lab = {"broad panel": "Broad panel of drugs", "fentanyls/opioids": "Fentanyl analogues and other opioids", "cannabinoids": "Synthetic cannabinoids",
+           "cathinones": "Synthetic cathinones", "phenethylamines/amphetamines": "Phenethylamines and amphetamines", "nitazenes": "Nitazenes",
+           "benzodiazepines": "Designer benzodiazepines", "arylcyclohexylamines": "Arylcyclohexylamines", "other": "Other"}
+    b = [(lab[c], sum(tested(r) for r in elig if c in r["drug_class_focus"].split("; ")), sum(not tested(r) for r in elig if c in r["drug_class_focus"].split("; ")))
+         for c, _ in classes.most_common()]
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(6.6, 5.6), gridspec_kw={"height_ratios": [len(a), len(b)]})
+    for ax, data, title in ((ax1, a, "(a) Method family"), (ax2, b, "(b) Drug class studied")):
+        ys = list(range(len(data)))[::-1]
+        for y, (name, t, u) in zip(ys, data):
+            ax.barh(y, t, color=BLUE, height=0.6); ax.barh(y, u, left=t, color=GREY, height=0.6)
+            ax.text(t + u + 0.6, y, f"{t} of {t + u}", va="center", color=SOFT, fontsize=8)
+        ax.set_yticks(ys); ax.set_yticklabels([d[0] for d in data], color=INK, fontsize=8.2); ax.set_xlim(0, 48); ax.set_xticks([])
+        for s in ("top", "right", "bottom"): ax.spines[s].set_visible(False)
+        ax.spines["left"].set_color("#999999"); ax.tick_params(axis="y", length=0, pad=6)
+        ax.set_title(title, loc="left", fontsize=9, color=INK, weight="bold", x=-0.52)
+    fig.text(0.012, 0.985, "Whether unseen compounds were tested depended on what a method was built for", fontsize=10.2, weight="bold", color=INK, va="top")
+    fig.text(0.012, 0.95, "Eligible studies; blue: tested any compound absent from the reference. In (b), a study of two classes counts in both.", fontsize=8, color=SOFT, va="top")
+    plt.subplots_adjust(left=0.36, right=0.97, top=0.86, bottom=0.03, hspace=0.32)
+    save(fig, "fig5_methods_classes")
+
+fig_designs(); fig_flow(); fig_split(); stats = fig_years(); cit = fig_sources(); fig_methods_classes()
 print("before 2020 %d of %d; 2020 onwards %d of %d, 95%% CI %.0f-%.0f%%" % (stats[0], stats[1], stats[2], stats[3], 100 * stats[4], 100 * stats[5]))
 print("eligible found only by citation chasing:", cit)
