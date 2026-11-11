@@ -21,6 +21,9 @@ Pilot analyses for a planned review and benchmark on how mass-spectral library s
 | `scripts/dart_pilot.py` | DART-MS leave-one-compound-out and temporal tests, energy weighting |
 | `review/review_search.py` | Literature search for the review: PubMed, seed check, citation chasing, RIS merge |
 | `review/pubmed_query.txt`, `review/seeds.csv` | The protocol's PubMed query and seed papers |
+| `review/screening/` | Title-and-abstract screening decisions for the 1,010 records, each with its reason, and the 174 records taken forward |
+| `review/extraction/` | Full-text extraction workbook (codebook, double coding, progress) and the abstract-level coding of all 174 candidates (`abstract_coding.csv`) |
+| `review/figures/` | `make_figures.py` and the review's figures, drawn from `abstract_coding.csv` |
 | `data/` | Libraries (not committed; see `data/README.md` for sources and licences) |
 
 ## Setup
@@ -48,6 +51,8 @@ SWGDRUG's library is copyrighted: the scripts download it from SWGDRUG and nothi
 ## Review search
 
 `review/review_search.py --email you@example.org --out review/run` runs the protocol's PubMed query, checks the seed papers are found, chases their citations through OpenAlex, runs a preprint search, merges any Scopus or Web of Science RIS exports given with `--import-ris`, and writes one deduplicated `combined.ris` for screening plus a `run_log.md` with the dates and counts to record.
+
+`python review/figures/make_figures.py` redraws the review's figures from `review/extraction/abstract_coding.csv` (PDF and PNG, written to `review/figures/`).
 
 ## Citation
 

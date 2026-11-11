@@ -8,3 +8,4 @@ __MACOSX/
 .DS_Store
 __pycache__/
 *.pyc
+paper/
