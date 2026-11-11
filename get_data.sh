@@ -16,9 +16,9 @@ echo "NIST DART-MS Forensics Database"
 cd ../dartms
 for r in 210915_He_Pos_Library_Dragonfly 220120_He_Pos_Library_Earthworm 230104_He_Pos_Library_Grasshopper \
          230919_HePos_Hornet_v1 240319_HePos_Inchworm_v1 250101_HePos_Joro 251229_HePos_Katydid 260414_HePos_Locust; do
-  [ -f "$r.zip" ] || curl -fLO "https://data.nist.gov/od/ds/mds2-2313/$r.zip" || echo "  could not download $r (NIST has been returning server errors for some releases)"
+  [ -f "$r.zip" ] || curl -fLO "https://data.nist.gov/od/ds/mds2-2313/$r.zip" || echo "  could not download $r"
 done
-[ -f 260914_HePos_Monarch.zip ] || curl -fLO "https://data.nist.gov/od/ds/mds2-4327/260914_HePos_Monarch.zip" || echo "  could not download 260914_HePos_Monarch"
+[ -f 260914_HePos_Monarch.zip ] || curl -fLO "https://data.nist.gov/od/ds/mds2-2313/260914_HePos_Monarch.zip" || curl -fLO "https://data.nist.gov/od/ds/mds2-4327/260914_HePos_Monarch.zip" || echo "  could not download 260914_HePos_Monarch"
 
 sha() { if command -v shasum > /dev/null; then shasum -a 256 "$1" | cut -d' ' -f1; else sha256sum "$1" | cut -d' ' -f1; fi; }
 while read -r hash file; do
